@@ -119,7 +119,6 @@ The bonus is calculated as:
 
 ini
 
-Копировать
 
 calculatedReward = (stakedAmount * effectiveRate * stakingTime) / (365 days * 100)
 

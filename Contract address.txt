@@ -1,0 +1,3 @@
+Contract address:  TQep3KZNtFKWtPf2x2LgaWfxNouoDgxEiU
+
+Successful deployed contract 'KokoWinToken'. Cost: 495.32385 TRX, 6,753 energy. Transaction confirm here 281b34781556923895d3815193975b8c63b088352b75288353172968f68a4156

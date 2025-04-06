@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+/// @title Interface for interacting with the main (primary) token smart contract
+interface IKokoWinToken {
+    // Standard TRC20 functions
+    function transfer(address _to, uint256 _value) external returns (bool);
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+    function approve(address _spender, uint256 _value) external returns (bool);
+    function allowance(address _owner, address _spender) external view returns (uint256);
+    
+    // Administrative functions available only to the owner of the main contract
+    function pause() external;
+    function unpause() external;
+    function setStakingStatus(bool _status) external;
+    function airdropFromOwner(address[] calldata recipients, uint256[] calldata amounts) external;
+    function withdrawTRX(uint256 amount) external;
+    function claimFees(uint256 amount) external;
+    function transferOwnership(address newOwner) external;
+}
+
+/// @title Controller for fee-free token transfers and main contract management
+/// @notice This contract implements separate pause and unpause functions for itself, and when ownership is returned, it enters a paused state.
+contract KokoWinController {
+    /// Address of the main token contract
+    IKokoWinToken public token;
+    
+    /// Controller owner
+    address public owner;
+    
+    /// Pause state for the secondary contract functions
+    bool public paused;
+    
+    /// Reentrancy guard
+    bool private locked;
+    
+    /// Internal tracking of user deposits
+    uint256 public totalDeposits;
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowances;
+    
+    // Controller events
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Paused(address account);
+    event Unpaused(address account);
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    
+    // Modifier for functions available only to the owner
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+    
+    // Modifier for functions that operate only when not paused
+    modifier whenNotPaused() {
+        require(!paused, "Controller is paused");
+        _;
+    }
+    
+    // Modifier for reentrancy protection
+    modifier nonReentrant() {
+        require(!locked, "Reentrant call");
+        locked = true;
+        _;
+        locked = false;
+    }
+    
+    /// @notice Upon creation of the controller, the address of the main token contract is set
+    constructor(address _tokenAddress) {
+        require(_tokenAddress != address(0), "Invalid token address");
+        token = IKokoWinToken(_tokenAddress);
+        owner = msg.sender;
+    }
+    
+    // ============ Functions for managing the pause state of the secondary contract ============
+    
+    /// @notice Function to pause the secondary contract
+    function pauseController() external onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+    
+    /// @notice Function to unpause the secondary contract
+    function unpauseController() external onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+    
+    /// @notice Function to change the controller owner
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "New owner is zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+    
+    // ============ Functions for token deposit and withdrawal ============
+    
+    /// @notice Deposit tokens into the controller (the user must first call approve on the main contract)
+    function deposit(uint256 amount) external nonReentrant whenNotPaused {
+        require(amount > 0, "Amount must be > 0");
+        bool success = token.transferFrom(msg.sender, address(this), amount);
+        require(success, "Token transferFrom failed");
+        balances[msg.sender] += amount;
+        totalDeposits += amount;
+        emit Deposit(msg.sender, amount);
+    }
+    
+    /// @notice Withdraw tokens from the controller by the user
+    function withdraw(uint256 amount) external nonReentrant whenNotPaused {
+        require(amount > 0, "Amount must be > 0");
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] -= amount;
+        totalDeposits -= amount;
+        bool success = token.transfer(msg.sender, amount);
+        require(success, "Token transfer failed");
+        emit Withdraw(msg.sender, amount);
+    }
+    
+    // ============ Internal ERC20 functions ============
+    
+    /// @notice Transfer tokens between accounts within the controller
+    function transfer(address to, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] -= amount;
+        balances[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+    
+    /// @notice Set approval for transferring tokens on behalf of the owner within the controller
+    function approve(address spender, uint256 amount) external whenNotPaused returns (bool) {
+        require(spender != address(0), "Invalid spender");
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+    
+    /// @notice Transfer tokens on behalf of another user (if approved)
+    function transferFrom(address from, address to, uint256 amount) external nonReentrant whenNotPaused returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(balances[from] >= amount, "Insufficient balance");
+        require(allowances[from][msg.sender] >= amount, "Allowance exceeded");
+        allowances[from][msg.sender] -= amount;
+        balances[from] -= amount;
+        balances[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+    
+    /// @notice View the allowed token transfer limit
+    function allowance(address _owner, address spender) external view returns (uint256) {
+        return allowances[_owner][spender];
+    }
+    
+    // ============ Functions for invoking administrative methods of the main contract ============
+    
+    /// @notice Call the pause() function of the main contract
+    function tokenPause() external onlyOwner nonReentrant whenNotPaused {
+        token.pause();
+    }
+    
+    /// @notice Call the unpause() function of the main contract
+    function tokenUnpause() external onlyOwner nonReentrant whenNotPaused {
+        token.unpause();
+    }
+    
+    /// @notice Manage the permission for staking creation in the main contract
+    function setStakingStatus(bool _status) external onlyOwner nonReentrant whenNotPaused {
+        token.setStakingStatus(_status);
+    }
+    
+    /// @notice Perform an airdrop via the main contract
+    function airdropFromOwner(address[] calldata recipients, uint256[] calldata amounts) external onlyOwner nonReentrant whenNotPaused {
+        token.airdropFromOwner(recipients, amounts);
+    }
+    
+    /// @notice Withdraw the native TRX token from the main contract's balance
+    function withdrawTRX(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
+        token.withdrawTRX(amount);
+    }
+    
+    /// @notice Claim the accumulated fees via the main contract
+    function claimFees(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
+        token.claimFees(amount);
+    }
+    
+    // ============ Function to return ownership of the main contract ============
+    
+    /// @notice Before returning ownership, this function pauses both the main contract and the secondary contract.
+    function returnTokenOwnership() external onlyOwner nonReentrant whenNotPaused {
+        // Pause the main contract
+        token.pause();
+        // Pause the secondary contract
+        paused = true;
+        emit Paused(msg.sender);
+        // Transfer ownership to the caller (the controller owner)
+        token.transferOwnership(msg.sender);
+    }
+    
+    // ============ Functions to receive TRX ============
+    
+    receive() external payable {}
+    fallback() external payable {}
+}
